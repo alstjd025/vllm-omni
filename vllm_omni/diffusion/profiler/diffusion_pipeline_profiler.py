@@ -45,8 +45,14 @@ def step_event_recorder(name: str, func: Callable, instance: Any) -> Callable:
 
 
 def _resolve_step_events(instance: Any) -> None:
-    """forward가 끝나고 synchronize한 뒤에 부른다. event 쌍을 초 단위 시간으로 바꿔 stage_durations에 넣는다."""
+    """기록된 event 쌍을 초 단위 시간으로 바꿔 stage_durations에 넣는다. _profiler_lock을 잡은 상태에서 부른다.
+
+    pipeline은 forward 안에서 stage_durations를 읽어 출력을 만든다(바깥 wrapper가 끝나기 전). 그래서 읽는 시점에 바꾼다.
+    마지막 event만 기다리면 같은 stream에서 앞서 기록된 event는 모두 끝나 있다.
+    """
     events, instance._step_events = instance._step_events, []
+    if events:
+        events[-1][2].synchronize()
     for i, (name, start, end) in enumerate(events):
         instance._stage_durations[f"{name}#{i:03d}"] = start.elapsed_time(end) / 1000.0
 
@@ -76,8 +82,6 @@ def profiler(name: str, func: Callable, instance: Any) -> Callable:
             # record the profiling data: duration of stages
             with instance._profiler_lock:
                 instance._stage_durations[metric_name] = instance._stage_durations.get(metric_name, 0.0) + duration
-                if is_forward and getattr(instance, "_step_events", None):
-                    _resolve_step_events(instance)
 
     return wrapper
 
@@ -168,6 +172,8 @@ class DiffusionPipelineProfilerMixin:
     @property
     def stage_durations(self) -> dict[str, float]:
         with self._profiler_lock:
+            if getattr(self, "_step_events", None):
+                _resolve_step_events(self)
             return self._stage_durations.copy()
 
     def clear_profiler_records(self) -> None:
