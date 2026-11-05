@@ -23,6 +23,7 @@ from diffusers.schedulers.scheduling_utils import SchedulerMixin
 
 from vllm_omni.diffusion.distributed.cfg_parallel import CFGParallelMixin
 from vllm_omni.diffusion.distributed.parallel_state import get_classifier_free_guidance_world_size
+from vllm_omni.diffusion.models.progress_bar import _is_rank_zero
 from vllm_omni.diffusion.models.schedulers import FlowUniPCMultistepScheduler
 
 from .preview_data_proxy import Magi2DataProxy, ModelInput
@@ -168,11 +169,14 @@ class Magi2PreviewSampler(CFGParallelMixin):
         latent = sampler_input.latent.clone()
         audio_latent = sampler_input.audio_latent.clone()
 
-        for timestep, video_cfg, audio_cfg in zip(
-            video_timesteps,
-            video_cfgs,
-            audio_cfgs,
-            strict=True,
+        # [SparkGen] 다른 pipeline의 progress_bar와 같은 형식으로 denoising step 진행을 rank 0에서 출력한다.
+        # MAGI-2만 진행 줄이 없어서 서버 로그로 진행률을 볼 수 없었다(웹 UI의 진행률 막대가 이 줄을 읽는다).
+        from tqdm.auto import tqdm
+
+        for timestep, video_cfg, audio_cfg in tqdm(
+            zip(video_timesteps, video_cfgs, audio_cfgs, strict=True),
+            total=len(video_timesteps),
+            disable=not _is_rank_zero(),
         ):
             model_input = self.prepare_model_input(
                 latent=latent,
